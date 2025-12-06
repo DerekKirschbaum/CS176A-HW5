@@ -7,205 +7,244 @@
 #include <time.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <stdint.h>
 
-char words[15][9];
+#define MAX_WORDS 15
+#define MAX_WORD_LEN 8
+
+char words[MAX_WORDS][MAX_WORD_LEN + 1];
 int numWords = 0;
 int numClients = 0;
 pthread_mutex_t mutex;
 
-struct serverMessage {
-    short message_flag;
-    short word_length;
-    int num_incorrect;
-    char data[256];
-};
+int recv_loop(int fd, void* buf, int len) {
+    int total = 0;
+    char* p = buf;
+    while (total < len) {
+        int n = recv(fd, p + total, len - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return 0;
+}
 
-struct clientMessage {
-    int message_length;
-    char data[2];
-};
-
-void sendMessage(int server_fd, int message_flag, int word_length, int num_incorrect, const char *data) {
-    struct serverMessage server_msg;
-    memset(&server_msg, 0, sizeof(server_msg));
-    server_msg.message_flag = message_flag;
-    server_msg.word_length = word_length;
-    server_msg.num_incorrect = num_incorrect;
-    strcpy(server_msg.data, data);
-    send(server_fd, &server_msg, sizeof(server_msg), 0);
-};
-
-void loadWords(char words[][9], int* numWords) {
-    *numWords = 0;
-    char l[9];
+void loadWords() {
+    numWords = 0;
     FILE *file = fopen("hangman_words.txt", "r");
     if (!file) {
         exit(EXIT_FAILURE);
     }
-    while (fgets(l, sizeof(l), file) && *numWords < 15) {
-        l[strcspn(l, "\n")] = '\0'; 
-        l[strcspn(l, "\r")] = '\0';
-        //printf("Loaded word: %s", l);
-        //printf("\n");
-        strcpy(words[*numWords], l);
-        (*numWords)++;
+    char line[MAX_WORD_LEN + 2];
+    while (fgets(line, sizeof(line), file) && numWords < MAX_WORDS) {
+        line[strcspn(line, "\r\n")] = '\0';
+        int len = strlen(line);
+        if (len >= 3 && len <= MAX_WORD_LEN) {
+            strcpy(words[numWords], line);
+            numWords++;
+        }
     }
     fclose(file);
 }
 
-void *newClient(void* client_socket) {
-    int new_socket = *(int*)client_socket;
-    int in;
-    struct serverMessage server_msg;
-    struct clientMessage client_msg;
-    if (recv(new_socket, &client_msg, sizeof(client_msg), 0) <= 0) {
-        printf("Client did not send start signal or closed the connection.\n");
+void sendMessage(int fd, const char *msg) {
+    uint8_t len = (uint8_t)strlen(msg);
+    send(fd, &len, 1, 0);
+    if (len > 0) {
+        send(fd, msg, len, 0);
+    }
+}
+
+void sendMessageHeader(int fd, char *progress, char *incorrect, uint8_t word_length, uint8_t num_incorrect) {
+    uint8_t header[3];
+    header[0] = 0;
+    header[1] = word_length;
+    header[2] = num_incorrect;
+    send(fd, header, 3, 0);
+
+    int total = word_length + num_incorrect;
+    char data[255];
+    memcpy(data, progress, word_length);
+    if (num_incorrect > 0) {
+        memcpy(data + word_length, incorrect, num_incorrect);
+    }
+    send(fd, data, total, 0);
+}
+
+void *newClient(void *arg) {
+    int client_fd = *(int*)arg;
+    free(arg);
+
+    uint8_t len;
+    if (recv_loop(client_fd, &len, 1) < 0) {
+        close(client_fd);
         pthread_mutex_lock(&mutex);
         numClients--;
         pthread_mutex_unlock(&mutex);
-        close(new_socket);
-        free(client_socket);
-        pthread_exit(NULL);
+        return NULL;
     }
 
-    if(client_msg.message_length == 0) {
-        in = rand() % numWords;
-        server_msg.message_flag = 0;
-        server_msg.word_length = strlen(words[in]);
-        server_msg.num_incorrect = 0;
-        memset(server_msg.data, 0, sizeof(server_msg.data));
-        for (int i = 0; i < server_msg.word_length; i++) {
-            server_msg.data[i] = '_';
-        }
-        send(new_socket, &server_msg, sizeof(server_msg), 0);
+    if (len != 0) {
+        close(client_fd);
+        pthread_mutex_lock(&mutex);
+        numClients--;
+        pthread_mutex_unlock(&mutex);
+        return NULL;
     }
+
+    int in = rand() % numWords;
+    char word[MAX_WORD_LEN + 1];
+    strcpy(word, words[in]);
+    uint8_t word_length = (uint8_t)strlen(word);
+
+    char progress[MAX_WORD_LEN + 1];
+    for (int i = 0; i < word_length; i++) {
+        progress[i] = '_';
+    }
+    progress[word_length] = '\0';
+
+    char incorrect[6];
+    uint8_t num_incorrect = 0;
+
+    sendMessageHeader(client_fd, progress, incorrect, word_length, num_incorrect);
+
     int valid = 1;
-    while(valid) {
-        if (recv(new_socket, &client_msg, sizeof(client_msg), 0) <= 0) {
+    while (valid) {
+        if (recv_loop(client_fd, &len, 1) < 0) {
             break;
         }
-        if (client_msg.message_length == 1) {
-            char g = client_msg.data[0];
-            int inWord = 0;
-            for(int i = 0; i < server_msg.word_length; i++) {
-                if(words[in][i] == g) {
-                    inWord = 1;
-                    server_msg.data[i] = g;
-                }
-            }
-            if(!inWord) {
-                server_msg.num_incorrect++;
-                server_msg.data[server_msg.word_length + server_msg.num_incorrect - 1] = g;
-            }
-            if(server_msg.num_incorrect >= 6) {
-                memset(&server_msg.data, 0, sizeof(server_msg.data));
-                strcpy(server_msg.data, "The word was ");
-                strcat(server_msg.data, words[in]);
-                strcat(server_msg.data, "\n");
-                strcat(server_msg.data, ">>>You Lose!\n>>>Game Over!\n");
-                server_msg.message_flag = strlen(server_msg.data);
-                server_msg.data[sizeof(server_msg.data) - 1] = '\0';
-                server_msg.word_length = 0;
-                server_msg.num_incorrect = 0;
-                valid = 0;
-                send(new_socket, &server_msg, sizeof(server_msg), 0);
-                break;
-            }
-            int correct = 1;
-            for(int i = 0; i < server_msg.word_length; i++) {
-                if(server_msg.data[i] == '_') {
-                    correct = 0;
-                    break;
-                }
-            }
-            if(correct) {
-                memset(&server_msg.data, 0, sizeof(server_msg.data));
-                strcpy(server_msg.data, "The word was ");
-                strcat(server_msg.data, words[in]);
-                strcat(server_msg.data, "\n");
-                strcat(server_msg.data, ">>>You Win!\n>>>Game Over!\n");
-                server_msg.message_flag = strlen(server_msg.data);
-                server_msg.data[sizeof(server_msg.data) - 1] = '\0';
-                server_msg.word_length = 0;
-                server_msg.num_incorrect = 0;
-                valid = 0;
-                send(new_socket, &server_msg, sizeof(server_msg), 0);
-                break;
-            }
-            server_msg.message_flag = 0;
-            send(new_socket, &server_msg, sizeof(server_msg), 0);
-        } else {
-            pthread_mutex_lock(&mutex);
-            numClients--;
-            pthread_mutex_unlock(&mutex);
-            close(new_socket);
-            free(client_socket);
-            pthread_exit(NULL);
+        if (len == 0) {
+            continue;
         }
+        if (len != 1) {
+            break;
+        }
+
+        uint8_t g;
+        if (recv_loop(client_fd, &g, 1) < 0) {
+            break;
+        }
+        char guess = (char)g;
+
+        int inWord = 0;
+        for (int i = 0; i < word_length; i++) {
+            if (word[i] == guess) {
+                progress[i] = guess;
+                inWord = 1;
+            }
+        }
+
+        if (!inWord && num_incorrect < 6) {
+            incorrect[num_incorrect] = guess;
+            num_incorrect++;
+        }
+
+        int correctWord = 1;
+        for (int i = 0; i < word_length; i++) {
+            if (progress[i] == '_') {
+                correctWord = 0;
+                break;
+            }
+        }
+
+        if (correctWord) {
+            char buf[64];
+            int pos = snprintf(buf, sizeof(buf), "The word was ");
+            for (int i = 0; i < word_length; i++) {
+                pos += snprintf(buf + pos, sizeof(buf) - pos, "%c%s", word[i], (i == word_length - 1) ? "" : " ");
+            }
+            sendMessage(client_fd, buf);
+            sendMessage(client_fd, "You Win!");
+            sendMessage(client_fd, "Game Over!");
+            break;
+        }
+
+        if (num_incorrect >= 6) {
+            char buf[64];
+            int pos = snprintf(buf, sizeof(buf), "The word was ");
+            for (int i = 0; i < word_length; i++) {
+                pos += snprintf(buf + pos, sizeof(buf) - pos, "%c%s", word[i], (i == word_length - 1) ? "" : " ");
+            }
+            sendMessage(client_fd, buf);
+            sendMessage(client_fd, "You Lose!");
+            sendMessage(client_fd, "Game Over!");
+            break;
+        }
+        sendMessageHeader(client_fd, progress, incorrect, word_length, num_incorrect);
     }
+    close(client_fd);
     pthread_mutex_lock(&mutex);
     numClients--;
     pthread_mutex_unlock(&mutex);
-    close(new_socket);
-    free(client_socket);
-    pthread_exit(NULL);
-
+    return NULL;
 }
 
-int main(int argc, char* argv[]) {
-    if(argc != 2) return -1;
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        return -1;
+    }
+
     int port = atoi(argv[1]);
+    srand((unsigned int)time(NULL));
+
     pthread_mutex_init(&mutex, NULL);
+    loadWords();
 
-    loadWords(words, &numWords);
-    int server_fd, curr_socket;
-    struct sockaddr_in address;
-    int addrlen = sizeof(address);
-
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
         exit(EXIT_FAILURE);
     }
+    int opt = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(port);
 
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-
-    if(setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int)) < 0) {
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         exit(EXIT_FAILURE);
     }
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        exit(EXIT_FAILURE);
-    }
-
     if (listen(server_fd, 3) < 0) {
         exit(EXIT_FAILURE);
     }
-    while(1) {
-        if ((curr_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-            exit(EXIT_FAILURE);
+
+    for (;;) {
+        struct sockaddr_in client_addr;
+        socklen_t client_len = sizeof(client_addr);
+        int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+        if (client_fd < 0) {
+            continue;
         }
-        loadWords(words, &numWords);
+
+        loadWords();
+
         pthread_mutex_lock(&mutex);
         if (numClients >= 3) {
-            const char *overload_msg = "server-overloaded";
-            sendMessage(curr_socket, strlen(overload_msg), 0, 0, overload_msg);
-            close(curr_socket);
+            sendMessage(client_fd, "server-overloaded");
+            close(client_fd);
         } else {
-            sendMessage(curr_socket, 0, 0, 0, "");
             numClients++;
-            int *new_socket = malloc(sizeof(int));
-            *new_socket = curr_socket;
-            pthread_t tid;
-            if (pthread_create(&tid, NULL, newClient, (void*)new_socket) < 0) {
-                free(new_socket);
-                continue;
+            int *pfd = malloc(sizeof(int));
+            if (!pfd) {
+                close(client_fd);
+                numClients--;
+            } else {
+                *pfd = client_fd;
+                pthread_t tid;
+                if (pthread_create(&tid, NULL, newClient, pfd) != 0) {
+                    close(client_fd);
+                    free(pfd);
+                    numClients--;
+                } else {
+                    pthread_detach(tid);
+                }
             }
         }
         pthread_mutex_unlock(&mutex);
     }
-    pthread_mutex_destroy(&mutex);
-    close(server_fd);
-    return 0;
 
+    close(server_fd);
+    pthread_mutex_destroy(&mutex);
+    return 0;
 }
