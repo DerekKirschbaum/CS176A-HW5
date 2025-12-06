@@ -8,8 +8,8 @@
 #include <ctype.h>
 
 struct serverMessage {
-    int message_flag;
-    int word_length;
+    short message_flag;
+    short word_length;
     int num_incorrect;
     char data[256];
 };
