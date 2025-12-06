@@ -113,9 +113,19 @@ void playHangman(int client_fd) {
         sendMessage(client_fd, 1, guess);
     }
 }
+
 void checkOverloaded(int client_fd) {
     uint8_t flag;
-    int n = recv(client_fd, &flag, 1, MSG_DONTWAIT);
+    int n = -1;
+
+    for (int i = 0; i < 50; i++) {
+        n = recv(client_fd, &flag, 1, MSG_DONTWAIT);
+        if (n == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            usleep(1000);
+            continue;
+        }
+        break;
+    }
 
     if (n <= 0) {
         return;
@@ -138,6 +148,7 @@ void checkOverloaded(int client_fd) {
         exit(EXIT_SUCCESS);
     }
 }
+
 
 
 void setupHangman(int client_fd) {
