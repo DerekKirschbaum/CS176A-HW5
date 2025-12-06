@@ -102,7 +102,10 @@ void setupHangman(int client_fd) {
     } else {
         printf(">>>Ready to start game? (y/n): ");
         char guess[256];
-        fgets(guess, sizeof(guess), stdin);
+        if (!fgets(guess, sizeof(guess), stdin)) {
+            close(client_fd);
+            exit(EXIT_SUCCESS);
+        }
         if (tolower(guess[0]) == 'y') {
             sendMessage(client_fd, 0, '\0');
             playHangman(client_fd);
