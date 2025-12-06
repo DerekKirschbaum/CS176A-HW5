@@ -148,10 +148,7 @@ void *newClient(void *arg) {
 
         if (correctWord) {
             char buf[64];
-            int pos = snprintf(buf, sizeof(buf), "The word was ");
-            for (int i = 0; i < word_length; i++) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "%c%s", word[i], (i == word_length - 1) ? "" : " ");
-            }
+            snprintf(buf, sizeof(buf), "The word was %s", word);
             sendMessage(client_fd, buf);
             sendMessage(client_fd, "You Win!");
             sendMessage(client_fd, "Game Over!");
@@ -160,10 +157,7 @@ void *newClient(void *arg) {
 
         if (num_incorrect >= 6) {
             char buf[64];
-            int pos = snprintf(buf, sizeof(buf), "The word was ");
-            for (int i = 0; i < word_length; i++) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "%c%s", word[i], (i == word_length - 1) ? "" : " ");
-            }
+            snprintf(buf, sizeof(buf), "The word was %s", word);
             sendMessage(client_fd, buf);
             sendMessage(client_fd, "You Lose!");
             sendMessage(client_fd, "Game Over!");

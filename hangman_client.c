@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <errno.h>
 
 int recv_loop(int fd, void *buf, int len) {
     int total = 0;
@@ -100,7 +101,10 @@ void playHangman(int client_fd) {
 
         printf(">>>Incorrect Guesses:");
         for (int i = 0; i < num_incorrect; i++) {
-            printf(" %c", tolower(data[word_length + i]));
+            printf(" %c", data[word_length + i]);
+            if (i < num_incorrect - 1) {
+                printf(" ");
+            }
         }
         printf("\n>>>\n");
         fflush(stdout);
@@ -109,6 +113,32 @@ void playHangman(int client_fd) {
         sendMessage(client_fd, 1, guess);
     }
 }
+void checkOverloaded(int client_fd) {
+    uint8_t flag;
+    int n = recv(client_fd, &flag, 1, MSG_DONTWAIT);
+
+    if (n <= 0) {
+        return;
+    }
+    if (flag == 0) {
+        return;
+    }
+
+    uint8_t len = flag;
+    char message[256];
+
+    if (recv_loop(client_fd, message, len) < 0) {
+        return;
+    }
+    message[len] = '\0';
+
+    if (strcmp(message, "server-overloaded") == 0) {
+        printf(">>>server-overloaded\n");
+        close(client_fd);
+        exit(EXIT_SUCCESS);
+    }
+}
+
 
 void setupHangman(int client_fd) {
     char line[256];
@@ -154,7 +184,7 @@ int main(int argc, char *argv[]) {
     if (connect(client_fd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
         exit(EXIT_FAILURE);
     }
-
+    checkOverloaded(client_fd);
     setupHangman(client_fd);
     close(client_fd);
     return 0;
