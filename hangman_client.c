@@ -99,7 +99,7 @@ void playHangman(int client_fd) {
         }
         printf("\n");
 
-        printf(">>>Incorrect Guesses:");
+        printf(">>>Incorrect Guesses: ");
         for (int i = 0; i < num_incorrect; i++) {
             printf(" %c", data[word_length + i]);
             if (i < num_incorrect - 1) {
